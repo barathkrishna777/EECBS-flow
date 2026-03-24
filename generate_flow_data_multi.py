@@ -18,8 +18,8 @@ BD_DIR = os.path.join(DATA_DIR, "bd_npzs", "large_scale")
 # Rishi's Omitted and Held-out (Test) Maps
 OMITTED_MAPS = {"brc202d", "orz900", "maze-128-128-1", "maze-128-128-10"}
 HELD_OUT_TEST = {
-    "Paris_1_256", "empty_48_48", "maze_128_128_2", "random_64_64_10", 
-    "random_32_32_10", "warehouse_10_20_10_2_1", "den312d", "den520d"
+    "Paris_1_256", "empty-48-48", "maze-128-128-2", "random-64-64-10",
+    "random-32-32-10", "warehouse-10-20-10-2-1", "den312d", "den520d"
 }
 
 WINDOW_LENGTH = 3 

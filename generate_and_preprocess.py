@@ -54,13 +54,10 @@ EECBS_BIN = os.path.join(EECBS_REPO, "build", "eecbs")
 OMITTED_MAPS = {"brc202d", "orz900", "maze-128-128-1", "maze-128-128-10"}
 
 # Test maps: generate BDs but NOT trajectories (for evaluation only)
-# NOTE: Uses actual filenames (hyphens, not underscores).
-# den312d removed — we want training data for this eval map.
-# empty-48-48 and random-32-32-10 kept OUT of this set intentionally
-# (they're eval maps but we want training data for them).
+# Must match Rishi's paper — all 8 held-out maps excluded from training.
 HELD_OUT_TEST = {
-    "Paris_1_256", "maze-128-128-2", "random-64-64-10",
-    "warehouse-10-20-10-2-1", "den520d"
+    "Paris_1_256", "empty-48-48", "maze-128-128-2", "random-64-64-10",
+    "random-32-32-10", "warehouse-10-20-10-2-1", "den312d", "den520d"
 }
 
 # REBALANCED agent counts: added 300 and 500 to fill gaps
