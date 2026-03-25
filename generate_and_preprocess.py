@@ -13,7 +13,7 @@ Expected directory layout:
 
 Usage:
     cd EECBS-flow
-    python generate_and_preprocess.py [--workers 32] [--skip-generation] [--skip-cleanup]
+    python generate_and_preprocess.py [--workers 32] [--skip-generation] [--skip-cleanup] [--custom-only]
 """
 import os
 import sys
@@ -321,6 +321,8 @@ def main():
                         help="Skip EECBS generation (only preprocess existing data)")
     parser.add_argument("--skip-cleanup", action="store_true",
                         help="Keep raw trajectory files after preprocessing")
+    parser.add_argument("--custom-only", action="store_true",
+                        help="Only process maps with 'custom_' in the name to prevent re-running old maps.")
     args = parser.parse_args()
 
     num_workers = args.workers if args.workers > 0 else cpu_count()
@@ -361,6 +363,10 @@ def main():
         # Phase 1: Generate missing BD heuristics
         # ==================================================
         map_files = glob.glob(os.path.join(MAP_DIR, "*.map"))
+        
+        if args.custom_only:
+            map_files = [m for m in map_files if "custom_" in os.path.basename(m)]
+            
         bd_jobs = []
         traj_jobs = []
 
@@ -379,7 +385,10 @@ def main():
                 if map_name not in HELD_OUT_TEST:
                     for n in AGENT_COUNTS:
                         # Small maps can't fit huge agent counts
-                        if n > 200 and "32-32" in map_name:
+                        if n > 200 and ("32-32" in map_name or "32_32" in map_name):
+                            continue
+                        # Corridor is incredibly tiny, only run the 20 agent config
+                        if n > 20 and "corridor" in map_name:
                             continue
                         traj_jobs.append((map_path, scen_path, n))
 
@@ -448,13 +457,24 @@ def main():
     # Build sample index
     print("  Building sample index...")
     npz_files = sorted(glob.glob(os.path.join(TRAJ_DIR, "*.npz")))
+    
+    # --- NEW OFFSET LOGIC ---
+    existing_pt_files = glob.glob(os.path.join(args.out, "sample_*.pt"))
+    start_idx = 0
+    if existing_pt_files:
+        # Find the highest existing sample index so we don't overwrite old data
+        indices = [int(os.path.basename(f).replace('sample_', '').replace('.pt', '')) for f in existing_pt_files]
+        start_idx = max(indices) + 1
+    # ------------------------
+
     index = []
     for f in tqdm(npz_files, desc="  Scanning"):
         try:
             with np.load(f) as data:
                 T = data['discrete_positions'].shape[1]
                 for t in range(T):
-                    index.append((f, t, len(index)))
+                    # USE start_idx HERE:
+                    index.append((f, t, start_idx + len(index)))
         except Exception:
             pass
     print(f"  Total samples: {len(index):,}")
@@ -462,7 +482,7 @@ def main():
     # Count how many already exist
     existing_pt = len(glob.glob(os.path.join(args.out, "sample_*.pt")))
     print(f"  Already preprocessed: {existing_pt:,}")
-    print(f"  To process: up to {len(index) - existing_pt:,}")
+    print(f"  To process: up to {len(index):,}")
 
     # Process
     print(f"  Processing with {num_workers} workers -> {args.out}/")
