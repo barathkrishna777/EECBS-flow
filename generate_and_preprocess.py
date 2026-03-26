@@ -94,6 +94,34 @@ def save_manifest(entries):
             f.write(entry + '\n')
 
 
+def seed_manifest_from_preprocessed_dir(preprocessed_dir, map_dir, scen_dir):
+    """Reconstruct manifest when raw .npz files were already cleaned up but
+    preprocessed .pt files exist. Enumerates all (map, scenario, agent_count)
+    combos the previous pipeline would have attempted, so only truly new
+    agent counts (700, 900) trigger EECBS generation."""
+    PREVIOUS_AGENT_COUNTS = [20, 50, 100, 200, 300, 400, 500, 600, 800, 1000]
+
+    entries = set()
+    map_files = glob.glob(os.path.join(map_dir, "*.map"))
+    for map_path in map_files:
+        map_name = os.path.basename(map_path).replace(".map", "")
+        if map_name in OMITTED_MAPS or map_name in HELD_OUT_TEST:
+            continue
+        scen_files = sorted(glob.glob(
+            os.path.join(scen_dir, f"{map_name}-random-*.scen")))
+        for scen_path in scen_files[:128]:
+            scen_name = os.path.basename(scen_path).replace(".scen", "")
+            for n in PREVIOUS_AGENT_COUNTS:
+                if n > 200 and ("32-32" in map_name or "32_32" in map_name):
+                    continue
+                if n > 20 and "corridor" in map_name:
+                    continue
+                entries.add(f"{scen_name}_{n}.npz")
+
+    save_manifest(sorted(entries))
+    return entries
+
+
 # ============================================================
 # EECBS helper functions (from generate_flow_data_multi.py)
 # ============================================================
@@ -436,16 +464,18 @@ def main():
         # Filter to only missing jobs (check raw .npz AND manifest of preprocessed)
         already_preprocessed = load_manifest()
 
-        # Auto-seed manifest from existing raw .npz files on first run
+        # Auto-seed manifest on first run after adding manifest tracking
         if not already_preprocessed and existing_trajs:
             seed_entries = set(os.path.basename(f) for f in existing_trajs)
             save_manifest(sorted(seed_entries))
             already_preprocessed = seed_entries
-            print(f"  Auto-seeded manifest with {len(seed_entries)} existing raw trajectories")
+            print(f"  Auto-seeded manifest from {len(seed_entries)} existing raw .npz files")
         elif not already_preprocessed and not existing_trajs and existing_pt > 0:
-            print("  WARNING: No manifest and no raw .npz files, but preprocessed .pt files exist.")
-            print("  Old trajectories were cleaned up before manifest tracking was added.")
-            print("  Previously generated trajectories will be regenerated. This is safe but slow.")
+            print("  No manifest and raw .npz cleaned up -- reconstructing from pipeline state...")
+            already_preprocessed = seed_manifest_from_preprocessed_dir(
+                args.out, MAP_DIR, SCEN_DIR)
+            print(f"  Reconstructed manifest with {len(already_preprocessed):,} entries "
+                  f"(previous agent counts). Only new counts will be generated.")
 
         traj_jobs_needed = []
         for map_path, scen_path, n in traj_jobs:
