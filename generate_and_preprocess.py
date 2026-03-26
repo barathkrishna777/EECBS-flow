@@ -63,6 +63,7 @@ HELD_OUT_TEST = {
 # Full range of agent counts including high-density
 AGENT_COUNTS = [20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 
+# Default manifest path; actual path is per-run: os.path.join(args.out, "preprocessed_manifest.txt")
 MANIFEST_FILE = os.path.join(PREPROCESSED_DIR, "preprocessed_manifest.txt")
 
 # Savitzky-Golay filter settings
@@ -78,23 +79,25 @@ M = 5  # nearest neighbors
 # Manifest: tracks which trajectories have been preprocessed
 # so we don't regenerate them after cleanup deletes raw .npz
 # ============================================================
-def load_manifest():
+def load_manifest(manifest_path=None):
     """Load set of trajectory basenames that have been preprocessed."""
-    if not os.path.exists(MANIFEST_FILE):
+    mp = manifest_path or MANIFEST_FILE
+    if not os.path.exists(mp):
         return set()
-    with open(MANIFEST_FILE, 'r') as f:
+    with open(mp, 'r') as f:
         return set(line.strip() for line in f if line.strip())
 
 
-def save_manifest(entries):
+def save_manifest(entries, manifest_path=None):
     """Append new trajectory basenames to the manifest."""
-    os.makedirs(os.path.dirname(MANIFEST_FILE), exist_ok=True)
-    with open(MANIFEST_FILE, 'a') as f:
+    mp = manifest_path or MANIFEST_FILE
+    os.makedirs(os.path.dirname(mp) or '.', exist_ok=True)
+    with open(mp, 'a') as f:
         for entry in entries:
             f.write(entry + '\n')
 
 
-def seed_manifest_from_preprocessed_dir(preprocessed_dir, map_dir, scen_dir):
+def seed_manifest_from_preprocessed_dir(preprocessed_dir, map_dir, scen_dir, manifest_path=None):
     """Reconstruct manifest when raw .npz files were already cleaned up but
     preprocessed .pt files exist. Enumerates all (map, scenario, agent_count)
     combos the previous pipeline would have attempted, so only truly new
@@ -118,7 +121,7 @@ def seed_manifest_from_preprocessed_dir(preprocessed_dir, map_dir, scen_dir):
                     continue
                 entries.add(f"{scen_name}_{n}.npz")
 
-    save_manifest(sorted(entries))
+    save_manifest(sorted(entries), manifest_path)
     return entries
 
 
@@ -376,9 +379,15 @@ def main():
     parser.add_argument("--include-heldout", action="store_true",
                         help="Also generate training trajectories for held-out test maps "
                              "(using scenarios 2..N, reserving scenario 1 for evaluation)")
-    parser.add_argument("--heldout-train-limit", type=int, default=8,
-                        help="Number of scenarios per held-out map for training (default: 8)")
+    parser.add_argument("--heldout-train-limit", type=int, default=16,
+                        help="Scenarios 2..(1+N) per held-out map for training (default: 16; max 24)")
     args = parser.parse_args()
+
+    if args.include_heldout and args.heldout_train_limit > 24:
+        print("ERROR: --heldout-train-limit cannot exceed 24 (scenarios 2..25; scenario 1 is eval).")
+        sys.exit(1)
+
+    manifest_path = os.path.join(os.path.abspath(args.out), "preprocessed_manifest.txt")
 
     num_workers = args.workers if args.workers > 0 else cpu_count()
 
@@ -405,7 +414,7 @@ def main():
         except (ValueError, IndexError):
             pass
 
-    manifest = load_manifest()
+    manifest = load_manifest(manifest_path)
 
     print("=" * 60)
     print("CURRENT DATASET DISTRIBUTION")
@@ -481,20 +490,25 @@ def main():
                         traj_jobs.append((map_path, scen_path, n))
 
         # Filter to only missing jobs (check raw .npz AND manifest of preprocessed)
-        already_preprocessed = load_manifest()
+        already_preprocessed = load_manifest(manifest_path)
 
         # Auto-seed manifest on first run after adding manifest tracking
         if not already_preprocessed and existing_trajs:
             seed_entries = set(os.path.basename(f) for f in existing_trajs)
-            save_manifest(sorted(seed_entries))
+            save_manifest(sorted(seed_entries), manifest_path)
             already_preprocessed = seed_entries
             print(f"  Auto-seeded manifest from {len(seed_entries)} existing raw .npz files")
         elif not already_preprocessed and not existing_trajs and existing_pt > 0:
-            print("  No manifest and raw .npz cleaned up -- reconstructing from pipeline state...")
-            already_preprocessed = seed_manifest_from_preprocessed_dir(
-                args.out, MAP_DIR, SCEN_DIR)
-            print(f"  Reconstructed manifest with {len(already_preprocessed):,} entries "
-                  f"(previous agent counts). Only new counts will be generated.")
+            if args.include_heldout:
+                print("  Held-out-only output: skipping base-dataset manifest reconstruction "
+                      "(use existing manifest or raw .npz in TRAJ_DIR).")
+                already_preprocessed = set()
+            else:
+                print("  No manifest and raw .npz cleaned up -- reconstructing from pipeline state...")
+                already_preprocessed = seed_manifest_from_preprocessed_dir(
+                    args.out, MAP_DIR, SCEN_DIR, manifest_path)
+                print(f"  Reconstructed manifest with {len(already_preprocessed):,} entries "
+                      f"(previous agent counts). Only new counts will be generated.")
 
         traj_jobs_needed = []
         for map_path, scen_path, n in traj_jobs:
@@ -604,10 +618,10 @@ def main():
 
     # Update manifest with all .npz files that were successfully preprocessed
     newly_preprocessed = set(os.path.basename(f) for f, _, _ in index)
-    already_in_manifest = load_manifest()
+    already_in_manifest = load_manifest(manifest_path)
     new_entries = newly_preprocessed - already_in_manifest
     if new_entries:
-        save_manifest(sorted(new_entries))
+        save_manifest(sorted(new_entries), manifest_path)
         print(f"  Manifest updated: {len(new_entries):,} new entries "
               f"(total: {len(already_in_manifest) + len(new_entries):,})")
 
