@@ -60,8 +60,10 @@ HELD_OUT_TEST = {
     "random-32-32-10", "warehouse-10-20-10-2-1", "den312d", "den520d"
 }
 
-# REBALANCED agent counts: added 300 and 500 to fill gaps
-AGENT_COUNTS = [20, 50, 100, 200, 300, 400, 500, 600, 800, 1000]
+# Full range of agent counts including high-density
+AGENT_COUNTS = [20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+
+MANIFEST_FILE = os.path.join(PREPROCESSED_DIR, "preprocessed_manifest.txt")
 
 # Savitzky-Golay filter settings
 WINDOW_LENGTH = 3
@@ -70,6 +72,26 @@ POLY_ORDER = 2
 # Preprocessing settings
 K = 4  # local region size
 M = 5  # nearest neighbors
+
+
+# ============================================================
+# Manifest: tracks which trajectories have been preprocessed
+# so we don't regenerate them after cleanup deletes raw .npz
+# ============================================================
+def load_manifest():
+    """Load set of trajectory basenames that have been preprocessed."""
+    if not os.path.exists(MANIFEST_FILE):
+        return set()
+    with open(MANIFEST_FILE, 'r') as f:
+        return set(line.strip() for line in f if line.strip())
+
+
+def save_manifest(entries):
+    """Append new trajectory basenames to the manifest."""
+    os.makedirs(os.path.dirname(MANIFEST_FILE), exist_ok=True)
+    with open(MANIFEST_FILE, 'a') as f:
+        for entry in entries:
+            f.write(entry + '\n')
 
 
 # ============================================================
@@ -343,12 +365,31 @@ def main():
         except (ValueError, IndexError):
             pass
 
+    manifest = load_manifest()
+
     print("=" * 60)
     print("CURRENT DATASET DISTRIBUTION")
     print("=" * 60)
-    for k_count in sorted(agent_dist.keys()):
-        print(f"  {k_count:>6} agents: {agent_dist[k_count]:>5} files")
-    print(f"  {'Total':>6}: {len(existing_trajs):>5} files")
+    if existing_trajs:
+        print("  Raw trajectory .npz files:")
+        for k_count in sorted(agent_dist.keys()):
+            print(f"    {k_count:>6} agents: {agent_dist[k_count]:>5} files")
+        print(f"    {'Total':>6}: {len(existing_trajs):>5} files")
+    else:
+        print("  No raw .npz files (cleaned up after previous preprocessing)")
+    if manifest:
+        manifest_dist = defaultdict(int)
+        for entry in manifest:
+            try:
+                n = int(entry.replace('.npz', '').rsplit('_', 1)[1])
+                manifest_dist[n] += 1
+            except (ValueError, IndexError):
+                pass
+        print(f"  Preprocessed manifest: {len(manifest):,} trajectories already done")
+        for k_count in sorted(manifest_dist.keys()):
+            print(f"    {k_count:>6} agents: {manifest_dist[k_count]:>5} preprocessed")
+    existing_pt = len(glob.glob(os.path.join(args.out, "sample_*.pt")))
+    print(f"  Preprocessed .pt samples: {existing_pt:,}")
     print()
 
     if not args.skip_generation:
@@ -392,12 +433,26 @@ def main():
                             continue
                         traj_jobs.append((map_path, scen_path, n))
 
-        # Filter to only missing jobs
+        # Filter to only missing jobs (check raw .npz AND manifest of preprocessed)
+        already_preprocessed = load_manifest()
+
+        # Auto-seed manifest from existing raw .npz files on first run
+        if not already_preprocessed and existing_trajs:
+            seed_entries = set(os.path.basename(f) for f in existing_trajs)
+            save_manifest(sorted(seed_entries))
+            already_preprocessed = seed_entries
+            print(f"  Auto-seeded manifest with {len(seed_entries)} existing raw trajectories")
+        elif not already_preprocessed and not existing_trajs and existing_pt > 0:
+            print("  WARNING: No manifest and no raw .npz files, but preprocessed .pt files exist.")
+            print("  Old trajectories were cleaned up before manifest tracking was added.")
+            print("  Previously generated trajectories will be regenerated. This is safe but slow.")
+
         traj_jobs_needed = []
         for map_path, scen_path, n in traj_jobs:
             scen_name = os.path.basename(scen_path).replace(".scen", "")
-            out_file = os.path.join(TRAJ_DIR, f"{scen_name}_{n}.npz")
-            if not os.path.exists(out_file):
+            npz_basename = f"{scen_name}_{n}.npz"
+            out_file = os.path.join(TRAJ_DIR, npz_basename)
+            if not os.path.exists(out_file) and npz_basename not in already_preprocessed:
                 traj_jobs_needed.append((map_path, scen_path, n))
 
         print(f"Phase 1: BD Heuristics ({len(bd_jobs)} scenarios to check)")
@@ -497,6 +552,15 @@ def main():
     succeeded = sum(1 for r in results if r is not None)
     failed = sum(1 for r in results if r is None)
     print(f"  Done! {succeeded:,} samples OK, {failed:,} failed.\n")
+
+    # Update manifest with all .npz files that were successfully preprocessed
+    newly_preprocessed = set(os.path.basename(f) for f, _, _ in index)
+    already_in_manifest = load_manifest()
+    new_entries = newly_preprocessed - already_in_manifest
+    if new_entries:
+        save_manifest(sorted(new_entries))
+        print(f"  Manifest updated: {len(new_entries):,} new entries "
+              f"(total: {len(already_in_manifest) + len(new_entries):,})")
 
     # Show final distribution
     final_trajs = glob.glob(os.path.join(TRAJ_DIR, "*.npz"))
