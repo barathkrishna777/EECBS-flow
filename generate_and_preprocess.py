@@ -373,6 +373,11 @@ def main():
                         help="Keep raw trajectory files after preprocessing")
     parser.add_argument("--custom-only", action="store_true",
                         help="Only process maps with 'custom_' in the name to prevent re-running old maps.")
+    parser.add_argument("--include-heldout", action="store_true",
+                        help="Also generate training trajectories for held-out test maps "
+                             "(using scenarios 2..N, reserving scenario 1 for evaluation)")
+    parser.add_argument("--heldout-train-limit", type=int, default=8,
+                        help="Number of scenarios per held-out map for training (default: 8)")
     args = parser.parse_args()
 
     num_workers = args.workers if args.workers > 0 else cpu_count()
@@ -380,6 +385,13 @@ def main():
     # Ensure directories exist
     for d in [TRAJ_DIR, BD_DIR, args.out]:
         os.makedirs(d, exist_ok=True)
+
+    if args.include_heldout:
+        print(f"** --include-heldout: generating training trajectories for held-out maps")
+        print(f"   Maps: {', '.join(sorted(HELD_OUT_TEST))}")
+        print(f"   Scenarios: 2 through {1 + args.heldout_train_limit} "
+              f"(scenario 1 reserved for eval)")
+        print()
 
     # ==========================================================
     # Phase 0: Show current dataset distribution
@@ -451,12 +463,19 @@ def main():
             for scen_path in scen_files[:limit]:
                 bd_jobs.append((map_path, scen_path))
 
+                scen_num = int(os.path.basename(scen_path).rsplit("-", 1)[1].replace(".scen", ""))
+                generate_traj = False
+
                 if map_name not in HELD_OUT_TEST:
+                    generate_traj = True
+                elif args.include_heldout and 2 <= scen_num <= (1 + args.heldout_train_limit):
+                    # Scenario 1 is reserved for evaluation; use 2..N for training
+                    generate_traj = True
+
+                if generate_traj:
                     for n in AGENT_COUNTS:
-                        # Small maps can't fit huge agent counts
                         if n > 200 and ("32-32" in map_name or "32_32" in map_name):
                             continue
-                        # Corridor is incredibly tiny, only run the 20 agent config
                         if n > 20 and "corridor" in map_name:
                             continue
                         traj_jobs.append((map_path, scen_path, n))
